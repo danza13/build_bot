@@ -33,7 +33,7 @@ from sheets_helper import (
     update_shift_row,
 )
 
-load_dotenv()  # Для локального запуску. На Render також згодиться.
+load_dotenv()  # Для локального запуску або на Render
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -131,7 +131,6 @@ def load_registered_users():
     """
     file_content = load_drive_file("users.txt")
     if not file_content.strip():
-        # Якщо файл порожній, повертаємо порожній словник
         return {}
 
     lines = file_content.strip().split("\n")
@@ -155,20 +154,12 @@ def load_registered_users():
 def save_registered_user(user_id, phone, fio):
     """
     Додає (або оновлює) інформацію про одного користувача у файлі users.txt.
-    У кінці файлу додаємо рядок:  <user_id>, <phone>, <fio>,
-    (Якщо треба уникнути дублю – можна попередньо видалити старий рядок.)
     """
-    # Спершу прочитаємо існуючий вміст
     users_dict = load_registered_users()
-
-    # Якщо user_id вже існує – видаляємо його для уникнення дублю
     if user_id in users_dict:
         del users_dict[user_id]
-
-    # Додаємо оновлений
     users_dict[user_id] = {"phone": phone, "fio": fio, "car": ""}
 
-    # Формуємо вміст для запису
     lines = []
     for uid, data in users_dict.items():
         line = f"{uid}, {data['phone']}, {data['fio']}, "
@@ -185,7 +176,6 @@ def load_cars():
     """
     file_content = load_drive_file("cars.txt").strip()
     if not file_content:
-        # Створимо з дефолтними заголовками
         default_content = (
             "Марка авто, Колір, Номер авто\n"
             "Peugeot Expert(большой), 2FVK026\n"
@@ -220,6 +210,7 @@ def get_main_menu_reply_keyboard(user_id: int, context: CallbackContext):
     else:
         user_data = context.dispatcher.user_data.get(user_id, {})
         shift_start_dt = user_data.get("shift_start_dt")
+        # Якщо зміна триває > 1 години, показуємо кнопку «Завершаю»
         if shift_start_dt and (datetime.datetime.now() - shift_start_dt).total_seconds() >= 3600:
             keyboard = [["Завершаю"]]
         else:
@@ -496,34 +487,53 @@ def cancel_intermediate_jobs(user_id: int, context: CallbackContext):
             job.schedule_removal()
         context.dispatcher.user_data[user_id]["intermediate_jobs"] = []
 
-# ------------------------------ Прийом геолокації поза основним ланцюгом
+# ------------------------------ (Виправлена) Прийом геолокації поза основним ланцюгом
 def default_location_handler(update: Update, context: CallbackContext) -> None:
+    """
+    Якщо користувач відправив локацію, коли бот вже активний,
+    перевіряємо, чи це проміжна геолокація (3 або 6 годин).
+    Записуємо її у таблицю, а тоді знову показуємо головне меню.
+    """
     user_id = update.effective_user.id
     if not context.bot_data.get("active_work", {}).get(user_id, False):
         return
+    
     user_data = context.dispatcher.user_data.get(user_id, {})
     if "sheet_header_row" not in user_data or "shift_start_dt" not in user_data:
         return
+    
     shift_start_dt = user_data["shift_start_dt"]
+    # Наприклад, ігноруємо локацію, якщо зміна почалася менш ніж 5 хвилин тому
     if (datetime.datetime.now() - shift_start_dt).total_seconds() < 300:
         return
+    
     intermediate_count = user_data.get("intermediate_count", 0)
+    # Якщо вже 2 проміжні геолокації надіслані — більше не записуємо
     if intermediate_count >= 2:
         return
+
     loc = update.message.location
     if loc:
-        header_row = user_data.get("sheet_header_row")
+        header_row = user_data["sheet_header_row"]
         sheet = get_today_sheet(context)
         current_day = datetime.datetime.now().day
         target_row = header_row + current_day
+        
         col = 8 if intermediate_count == 0 else 9
         geo_str = f"{loc.latitude}, {loc.longitude}"
         sheet.update_cell(target_row, col, geo_str)
+        
         user_data["intermediate_count"] = intermediate_count + 1
+        
+        # Повідомляємо, що записано, й видаляємо клавіатуру.
         update.message.reply_text(
             f"Промежуточная геолокация {intermediate_count+1} записана.",
             reply_markup=ReplyKeyboardRemove()
         )
+        
+        # Обов'язково знову показуємо головне меню,
+        # щоб користувач бачив кнопку "Завершаю" (якщо вже можна) або "Идёт смена".
+        send_main_menu(user_id, context)
 
 def menu_command(update: Update, context: CallbackContext) -> None:
     send_main_menu(update.message.chat_id, context)
@@ -538,7 +548,7 @@ def main() -> None:
     dp.bot_data["registered_users"] = load_registered_users()
     dp.bot_data["active_work"] = {}
 
-    # Реєстрація
+    # Хендлер реєстрації
     reg_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
         states={
@@ -549,7 +559,7 @@ def main() -> None:
     )
     dp.add_handler(reg_handler)
 
-    # Початок зміни
+    # Хендлер початку зміни
     work_start_handler = ConversationHandler(
         entry_points=[MessageHandler(Filters.regex("^Приступаю$"), start_work_entry)],
         states={
@@ -563,7 +573,7 @@ def main() -> None:
     )
     dp.add_handler(work_start_handler)
 
-    # Завершення зміни
+    # Хендлер завершення зміни
     work_end_handler = ConversationHandler(
         entry_points=[MessageHandler(Filters.regex("^Завершаю$"), finish_work_entry)],
         states={
@@ -575,10 +585,10 @@ def main() -> None:
     )
     dp.add_handler(work_end_handler)
 
-    # Проміжна геолокація
+    # Проміжна геолокація (поза основним ланцюгом)
     dp.add_handler(MessageHandler(Filters.location, default_location_handler), group=1)
 
-    # /menu
+    # Команда /menu
     dp.add_handler(CommandHandler('menu', menu_command))
 
     # "Идёт смена"
