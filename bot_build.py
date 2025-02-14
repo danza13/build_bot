@@ -10,6 +10,7 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    Bot
 )
 from telegram.ext import (
     Updater,
@@ -33,7 +34,8 @@ from sheets_helper import (
     update_shift_row,
 )
 
-load_dotenv()  # Для локального запуску або на Render
+# Якщо локально або на Render - може бути корисно
+load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -531,8 +533,7 @@ def default_location_handler(update: Update, context: CallbackContext) -> None:
             reply_markup=ReplyKeyboardRemove()
         )
         
-        # Обов'язково знову показуємо головне меню,
-        # щоб користувач бачив кнопку "Завершаю" (якщо вже можна) або "Идёт смена".
+        # Показуємо головне меню знову
         send_main_menu(user_id, context)
 
 def menu_command(update: Update, context: CallbackContext) -> None:
@@ -542,13 +543,28 @@ def inactive_shift_button_handler(update: Update, context: CallbackContext) -> N
     update.message.reply_text("Смена еще не длится 1 час. Для завершения смены подождите, пожалуйста.")
 
 def main() -> None:
+    """
+    Головна функція запуску бота.
+    Тут ми:
+      - Створюємо Bot(token=BOT_TOKEN) і видаляємо будь-який Webhook.
+      - Створюємо Updater із drop_pending_updates=True,
+        щоб уникнути конфліктів при перезапусках.
+      - Реєструємо хендлери.
+      - Запускаємо long-polling.
+    """
+    # 1. Видаляємо старий Webhook (якщо був), щоб уникнути конфліктів
+    bot = Bot(token=BOT_TOKEN)
+    bot.delete_webhook()
+
+    # 2. Створюємо Updater
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    # 3. Ініціалізація бот-даних
     dp.bot_data["registered_users"] = load_registered_users()
     dp.bot_data["active_work"] = {}
 
-    # Хендлер реєстрації
+    # 4. Реєструємо хендлери
     reg_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
         states={
@@ -559,7 +575,6 @@ def main() -> None:
     )
     dp.add_handler(reg_handler)
 
-    # Хендлер початку зміни
     work_start_handler = ConversationHandler(
         entry_points=[MessageHandler(Filters.regex("^Приступаю$"), start_work_entry)],
         states={
@@ -573,7 +588,6 @@ def main() -> None:
     )
     dp.add_handler(work_start_handler)
 
-    # Хендлер завершення зміни
     work_end_handler = ConversationHandler(
         entry_points=[MessageHandler(Filters.regex("^Завершаю$"), finish_work_entry)],
         states={
@@ -585,16 +599,12 @@ def main() -> None:
     )
     dp.add_handler(work_end_handler)
 
-    # Проміжна геолокація (поза основним ланцюгом)
     dp.add_handler(MessageHandler(Filters.location, default_location_handler), group=1)
-
-    # Команда /menu
     dp.add_handler(CommandHandler('menu', menu_command))
-
-    # "Идёт смена"
     dp.add_handler(MessageHandler(Filters.regex("^Идёт смена$"), inactive_shift_button_handler))
 
-    updater.start_polling()
+    # 5. Запускаємо long-polling з drop_pending_updates=True
+    updater.start_polling(drop_pending_updates=True)
     updater.idle()
 
 if __name__ == '__main__':
