@@ -3,6 +3,7 @@ import calendar
 import os
 import json
 import gspread
+from zoneinfo import ZoneInfo
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_formatting import (
     CellFormat,
@@ -31,9 +32,7 @@ def get_gspread_client():
     CREDENTIALS_JSON = os.getenv("credentials", "")
     if not CREDENTIALS_JSON:
         raise ValueError("Environment variable 'credentials' not found.")
-
     creds_dict = json.loads(CREDENTIALS_JSON)
-
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/spreadsheets",
@@ -46,17 +45,9 @@ def get_gspread_client():
 
 def get_month_sheet():
     client = get_gspread_client()
-    # Замість відкривати за назвою spreadsheet, відкриємо за ІД
-    # Ось варіант open_by_key з ID:
+    # Відкриваємо таблицю за ключем (ID)
     spreadsheet = client.open_by_key("1FojL9Buaw2MxE1V9zFpeXYwM75ym1MLHeIq44OFn_H4")
-
-    # (Або можна було б так:
-    #   spreadsheet = client.open_by_url(
-    #       "https://docs.google.com/spreadsheets/d/1FojL9Buaw2MxE1V9zFpeXYwM75ym1MLHeIq44OFn_H4/edit?usp=sharing"
-    #   )
-    # )
-
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(ZoneInfo("Europe/Brussels"))
     month_name = MONTH_NAMES.get(now.month, "Unknown")
     try:
         sheet = spreadsheet.worksheet(month_name)
@@ -68,7 +59,7 @@ def get_today_sheet(context=None):
     return get_month_sheet()
 
 def get_days_in_month():
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(ZoneInfo("Europe/Brussels"))
     return calendar.monthrange(now.year, now.month)[1]
 
 def merge_cells(sheet, range_str):
@@ -91,7 +82,6 @@ def create_worker_block(sheet, worker, start_row):
     data_start = header_row + 1
     data_end = header_row + days
 
-    # Заголовок (B:M)
     headers = [["ФИО", "Номер телефона", "АВТО", "Начальный пробег",
                 "Время начала", "Координаты начала",
                 "Промеж 3 часа", "Промеж 6 часов",
@@ -102,8 +92,7 @@ def create_worker_block(sheet, worker, start_row):
         'values': headers
     }])
 
-    # Дати в стовпчику M
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(ZoneInfo("Europe/Brussels"))
     date_updates = []
     for i in range(1, days + 1):
         day_str = f"{i:02d}.{now.month:02d}"
@@ -112,13 +101,11 @@ def create_worker_block(sheet, worker, start_row):
     if date_updates:
         sheet.batch_update(date_updates)
 
-    # Об’єднання клітинок для ФИО (B) і Телефона (C)
     merge_cells(sheet, f"B{data_start}:B{data_end}")
     merge_cells(sheet, f"C{data_start}:C{data_end}")
     sheet.update_acell(f"B{data_start}", worker["fio"])
     sheet.update_acell(f"C{data_start}", worker["phone"].lstrip("+"))
 
-    # Форматування
     general_format = CellFormat(
         backgroundColor=Color(0.97, 0.97, 0.97),
         horizontalAlignment="CENTER",
@@ -146,7 +133,6 @@ def create_worker_block(sheet, worker, start_row):
     phone_range = f"C{data_start}:C{data_end}"
     format_cell_range(sheet, phone_range, phone_format)
 
-    # Рамки
     border_request = {
       "updateBorders": {
         "range": {
@@ -190,7 +176,6 @@ def create_worker_block(sheet, worker, start_row):
     }
     sheet.spreadsheet.batch_update({"requests": [border_request]})
 
-    # Рядок-розділювач (висота 30)
     gap_request = {
         "updateDimensionProperties": {
             "range": {
@@ -207,14 +192,13 @@ def create_worker_block(sheet, worker, start_row):
     }
     sheet.spreadsheet.batch_update({"requests": [gap_request]})
 
-    # Ширина стовпців
     column_width_requests = [
         {
             "updateDimensionProperties": {
                 "range": {
                     "sheetId": sheet.id,
                     "dimension": "COLUMNS",
-                    "startIndex": 1,   # B
+                    "startIndex": 1,
                     "endIndex": 2
                 },
                 "properties": {
@@ -228,7 +212,7 @@ def create_worker_block(sheet, worker, start_row):
                 "range": {
                     "sheetId": sheet.id,
                     "dimension": "COLUMNS",
-                    "startIndex": 2,   # C
+                    "startIndex": 2,
                     "endIndex": 3
                 },
                 "properties": {
@@ -242,7 +226,7 @@ def create_worker_block(sheet, worker, start_row):
                 "range": {
                     "sheetId": sheet.id,
                     "dimension": "COLUMNS",
-                    "startIndex": 3,   # D - L
+                    "startIndex": 3,
                     "endIndex": 12
                 },
                 "properties": {
@@ -256,7 +240,7 @@ def create_worker_block(sheet, worker, start_row):
                 "range": {
                     "sheetId": sheet.id,
                     "dimension": "COLUMNS",
-                    "startIndex": 12,  # M
+                    "startIndex": 12,
                     "endIndex": 13
                 },
                 "properties": {
@@ -267,20 +251,5 @@ def create_worker_block(sheet, worker, start_row):
         }
     ]
     sheet.spreadsheet.batch_update({"requests": column_width_requests})
-
     next_free_row = data_end + 2
     return next_free_row, header_row
-
-def update_shift_row(sheet, header_row, shift_info):
-    current_day = datetime.datetime.now().day
-    target_row = header_row + current_day
-
-    if shift_info.get("no_shift", False):
-        for col in range(4, 13):
-            sheet.update_cell(target_row, col, "-")
-        return
-
-    sheet.update_cell(target_row, 4, shift_info.get("car", "-"))
-    sheet.update_cell(target_row, 5, shift_info.get("start_mileage", "-"))
-    sheet.update_cell(target_row, 6, shift_info.get("start_time", "-"))
-    sheet.update_cell(target_row, 7, shift_info.get("start_coords", "-"))
