@@ -187,7 +187,7 @@ def get_main_menu_reply_keyboard(user_id: int, context: CallbackContext):
         shift_start_dt = user_data.get("shift_start_dt")
         if shift_start_dt:
             elapsed = (now_belgium() - shift_start_dt).total_seconds()
-            if elapsed >= 10:
+            if elapsed >= 3600:
                 keyboard = [["Завершаю"]]
             else:
                 keyboard = [["Идёт смена"]]
