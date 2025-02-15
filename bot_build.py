@@ -46,22 +46,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# СТАНИ
 REG_PHONE, REG_FIO = range(1, 3)
 WS_DRIVING_CHOICE = 11
 WS_WAITING_FOR_START_MILEAGE = 12
 WS_CHOOSE_CAR = 13
 WS_WAITING_FOR_LOCATION = 14
 WE_WAITING_FOR_LOCATION, WE_WAITING_FOR_MILEAGE = range(20, 22)
-INTERMEDIATE_WAITING_FOR_LOCATION = 30
 
 PHONE_REGEX = re.compile(r'^(?:\+32\d{8,9}|0\d{9})$')
 
-# Функція для отримання локального часу Бельгії
 def now_belgium():
+    """Повертає поточний час у часовому поясі Europe/Brussels."""
     return datetime.datetime.now(ZoneInfo("Europe/Brussels"))
 
-# ------------------------------
-# Робота з файлами Drive
+# ======================================================
+# Робота з файлами на Google Drive
+# ======================================================
 def get_drive_service_account():
     if not CREDENTIALS_JSON:
         raise ValueError("Environment variable 'credentials' (JSON) is not set.")
@@ -98,8 +99,9 @@ def save_drive_file(file_name, content):
     f.SetContentString(content)
     f.Upload()
 
-# ------------------------------
-# Користувачі та авто
+# ======================================================
+# Користувачі та список авто
+# ======================================================
 def load_registered_users():
     file_content = load_drive_file("users.txt")
     if not file_content.strip():
@@ -155,23 +157,38 @@ def load_cars():
         cars.append(line)
     return cars
 
-# ------------------------------
-# Телеграм-бот
+# ======================================================
+# Формування головного меню
+# ======================================================
 def get_location_keyboard():
     button = KeyboardButton("Поделиться геолокацией", request_location=True)
     return ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
 
 def get_main_menu_reply_keyboard(user_id: int, context: CallbackContext):
+    """
+    Повертає кнопки залежно від того, чи активна зміна,
+    і чи минула 1 година.
+    """
     active_work = context.bot_data.get("active_work", {})
     if not active_work.get(user_id, False):
+        # Зміна не активна => кнопка "Приступаю"
         keyboard = [["Приступаю"]]
     else:
+        # Зміна триває
         user_data = context.dispatcher.user_data.get(user_id, {})
         shift_start_dt = user_data.get("shift_start_dt")
-        if shift_start_dt and (now_belgium() - shift_start_dt).total_seconds() >= 3600:
-            keyboard = [["Завершаю"]]
+        if shift_start_dt:
+            elapsed = (now_belgium() - shift_start_dt).total_seconds()
+            if elapsed >= 3600:
+                # Якщо минула 1 година => "Завершаю"
+                keyboard = [["Завершаю"]]
+            else:
+                # Якщо менше години => "Идёт смена"
+                keyboard = [["Идёт смена"]]
         else:
-            keyboard = [["Идёт смена"]]
+            # Про всяк випадок - якщо чомусь немає shift_start_dt
+            keyboard = [["Завершаю"]]
+
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def send_main_menu(user_id: int, context: CallbackContext) -> None:
@@ -181,14 +198,18 @@ def send_main_menu(user_id: int, context: CallbackContext) -> None:
         reply_markup=get_main_menu_reply_keyboard(user_id, context)
     )
 
-# ------------------------------
+# ======================================================
 # Реєстрація
+# ======================================================
+REG_PHONE, REG_FIO = range(1, 3)
+
 def start_command(update: Update, context: CallbackContext) -> int:
     user_id = update.effective_user.id
     if "registered_users" not in context.bot_data:
         context.bot_data["registered_users"] = load_registered_users()
 
     if user_id in context.bot_data["registered_users"]:
+        # Якщо вже зареєстрований
         update.message.reply_text("Вы уже зарегистрированы!")
         send_main_menu(user_id, context)
         return ConversationHandler.END
@@ -203,6 +224,7 @@ def reg_phone(update: Update, context: CallbackContext) -> int:
         phone = update.message.contact.phone_number
     else:
         phone = update.message.text.strip()
+
     phone = phone.replace(" ", "")
     if not PHONE_REGEX.match(phone):
         update.message.reply_text("Неверный формат номера. Введите номер в формате +32XXXXXXXXX или 0XXXXXXXXX:")
@@ -215,8 +237,8 @@ def reg_phone(update: Update, context: CallbackContext) -> int:
 def reg_fio(update: Update, context: CallbackContext) -> int:
     context.user_data['fio'] = update.message.text.strip()
     update.message.reply_text("Регистрация завершена.")
-    user_id = update.effective_user.id
 
+    user_id = update.effective_user.id
     if "registered_users" not in context.bot_data:
         context.bot_data["registered_users"] = {}
 
@@ -234,22 +256,30 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Действие отменено.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ------------------------------
+# ======================================================
 # Початок зміни
+# ======================================================
+WS_DRIVING_CHOICE = 11
+WS_WAITING_FOR_START_MILEAGE = 12
+WS_CHOOSE_CAR = 13
+WS_WAITING_FOR_LOCATION = 14
+
 def start_work_entry(update: Update, context: CallbackContext) -> int:
+    # Користувач обрав "Приступаю"
     reply_markup = ReplyKeyboardMarkup([["Да", "Нет"]], one_time_keyboard=True, resize_keyboard=True)
     update.message.reply_text("Вы будете за рулём?", reply_markup=reply_markup)
     return WS_DRIVING_CHOICE
 
 def ws_driving_choice_response(update: Update, context: CallbackContext) -> int:
     text = update.message.text.strip().lower()
+    user_id = update.effective_user.id
+
     if text == "да":
         update.message.reply_text("Введите начальный пробег автомобиля:", reply_markup=ReplyKeyboardRemove())
         return WS_WAITING_FOR_START_MILEAGE
     else:
-        user_id = update.effective_user.id
-        if user_id not in context.dispatcher.user_data:
-            context.dispatcher.user_data[user_id] = {}
+        # Якщо не за кермом
+        context.dispatcher.user_data.setdefault(user_id, {})
         context.dispatcher.user_data[user_id]["car"] = "-"
         context.dispatcher.user_data[user_id]["start_mileage"] = "-"
         update.message.reply_text(
@@ -265,8 +295,7 @@ def ws_waiting_for_start_mileage(update: Update, context: CallbackContext) -> in
         return WS_WAITING_FOR_START_MILEAGE
 
     user_id = update.effective_user.id
-    if user_id not in context.dispatcher.user_data:
-        context.dispatcher.user_data[user_id] = {}
+    context.dispatcher.user_data.setdefault(user_id, {})
     context.dispatcher.user_data[user_id]["start_mileage"] = start_mileage
 
     cars = load_cars()
@@ -274,6 +303,7 @@ def ws_waiting_for_start_mileage(update: Update, context: CallbackContext) -> in
         update.message.reply_text("Список автомобилей пуст. Обратитесь к администратору.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
+    # Пропонуємо вибрати авто
     reply_markup = ReplyKeyboardMarkup([[car] for car in cars], one_time_keyboard=True, resize_keyboard=True)
     update.message.reply_text("Выберите автомобиль из списка:", reply_markup=reply_markup)
     return WS_CHOOSE_CAR
@@ -282,6 +312,7 @@ def ws_choose_car(update: Update, context: CallbackContext) -> int:
     chosen_car = update.message.text.strip()
     cars = load_cars()
     if chosen_car not in cars:
+        # Якщо вводять некоректно
         reply_markup = ReplyKeyboardMarkup([[car] for car in cars], one_time_keyboard=True, resize_keyboard=True)
         update.message.reply_text("Выбранный автомобиль отсутствует в списке. Пожалуйста, выберите автомобиль:", reply_markup=reply_markup)
         return WS_CHOOSE_CAR
@@ -289,6 +320,7 @@ def ws_choose_car(update: Update, context: CallbackContext) -> int:
     user_id = update.effective_user.id
     context.dispatcher.user_data[user_id]["car"] = chosen_car
 
+    # Геолокація для початку
     update.message.reply_text(
         "Отправьте, пожалуйста, свою геолокацию для начала смены.",
         reply_markup=get_location_keyboard()
@@ -296,6 +328,7 @@ def ws_choose_car(update: Update, context: CallbackContext) -> int:
     return WS_WAITING_FOR_LOCATION
 
 def ws_receive_location(update: Update, context: CallbackContext) -> int:
+    # Користувач надіслав локацію для початку зміни
     loc = update.message.location
     if not loc:
         update.message.reply_text(
@@ -308,15 +341,17 @@ def ws_receive_location(update: Update, context: CallbackContext) -> int:
     now_time = now_belgium().strftime("%H:%M:%S")
     start_coords = f"{loc.latitude}, {loc.longitude}"
 
+    # Завантажуємо зареєстрованих користувачів, якщо треба
     if "registered_users" not in context.bot_data:
         context.bot_data["registered_users"] = load_registered_users()
-
     reg_data = context.bot_data["registered_users"][user_id]
+
+    # Записуємо дані
     worker = {
         "fio": reg_data["fio"],
         "phone": reg_data["phone"],
         "car": context.dispatcher.user_data[user_id].get("car", "-"),
-        "start_mileage": context.dispatcher.user_data[user_id].get("start_mileage", "-")
+        "start_mileage": context.dispatcher.user_data[user_id].get("start_mileage", "-"),
     }
 
     sheet = get_today_sheet(context)
@@ -332,9 +367,6 @@ def ws_receive_location(update: Update, context: CallbackContext) -> int:
         "start_time": now_time,
         "start_coords": start_coords,
     }
-
-    # -----------------------------
-    # ВИКЛИКАЄМО update_shift_row
     update_shift_row(sheet, header_row, shift_info)
 
     context.dispatcher.user_data[user_id]["sheet_header_row"] = header_row
@@ -344,15 +376,26 @@ def ws_receive_location(update: Update, context: CallbackContext) -> int:
     active_work[user_id] = True
     context.bot_data["active_work"] = active_work
 
+    # Призначаємо завдання на 3 та 6 годин
     schedule_intermediate_jobs(user_id, context)
 
     update.message.reply_text("Рабочий день начат. Данные записаны.", reply_markup=ReplyKeyboardRemove())
     send_main_menu(user_id, context)
     return ConversationHandler.END
 
-# ------------------------------
+
+# ======================================================
 # Завершення зміни
+# ======================================================
+WE_WAITING_FOR_LOCATION, WE_WAITING_FOR_MILEAGE = range(20, 22)
+
 def finish_work_entry(update: Update, context: CallbackContext) -> int:
+    """Починаємо процес завершення зміни."""
+    user_id = update.effective_user.id
+    # Додатково встановимо "finishing_mode", щоб ігнорувати проміжні локації
+    context.dispatcher.user_data.setdefault(user_id, {})
+    context.dispatcher.user_data[user_id]["finishing_mode"] = True
+
     update.message.reply_text(
         "Вы завершаете рабочий день.\nОтправьте, пожалуйста, свою геолокацию для завершения смены.",
         reply_markup=get_location_keyboard()
@@ -368,10 +411,11 @@ def we_receive_location(update: Update, context: CallbackContext) -> int:
         )
         return WE_WAITING_FOR_LOCATION
 
-    finish_coords = f"{loc.latitude}, {loc.longitude}"
     user_id = update.effective_user.id
+    finish_coords = f"{loc.latitude}, {loc.longitude}"
     context.dispatcher.user_data[user_id]["finish_coords"] = finish_coords
 
+    # Якщо за кермом - просимо пробіг, інакше одразу завершимо
     if context.dispatcher.user_data[user_id].get("car", "") != "-":
         update.message.reply_text("Введите конечный пробег автомобиля:")
         return WE_WAITING_FOR_MILEAGE
@@ -383,37 +427,47 @@ def we_receive_mileage(update: Update, context: CallbackContext) -> int:
     if not mileage.isdigit():
         update.message.reply_text("Введите, пожалуйста, числовое значение для конечного пробега.")
         return WE_WAITING_FOR_MILEAGE
+
     return record_finish(update, context, mileage)
 
 def record_finish(update: Update, context: CallbackContext, mileage: str) -> int:
     user_id = update.effective_user.id
     finish_time = now_belgium().strftime("%H:%M:%S")
+
     header_row = context.dispatcher.user_data[user_id].get("sheet_header_row")
     if not header_row:
         update.message.reply_text("Ошибка: запись текущей смены не найдена.")
+        # Вимикаємо finishing_mode
+        context.dispatcher.user_data[user_id]["finishing_mode"] = False
         return ConversationHandler.END
 
     sheet = get_today_sheet(context)
     current_day = now_belgium().day
     target_row = header_row + current_day
 
-    # Записуємо фінішні дані прямо у клітинки
     sheet.update_cell(target_row, 10, finish_time)
     sheet.update_cell(target_row, 11, context.dispatcher.user_data[user_id].get("finish_coords", ""))
     sheet.update_cell(target_row, 12, mileage)
 
+    # Скасовуємо проміжні job
     cancel_intermediate_jobs(user_id, context)
 
+    # Зміна більше не активна
     active_work = context.bot_data.get("active_work", {})
     active_work[user_id] = False
     context.bot_data["active_work"] = active_work
 
+    # Вимикаємо finishing_mode
+    context.dispatcher.user_data[user_id]["finishing_mode"] = False
+
     update.message.reply_text("Рабочий день завершён. Данные сохранены.", reply_markup=ReplyKeyboardRemove())
+    # Повертаємо меню (тепер буде «Приступаю»)
     send_main_menu(user_id, context)
     return ConversationHandler.END
 
-# ------------------------------
-# Проміжні запити геолокації (3 і 6 годин)
+# ======================================================
+# Проміжні локації (3 і 6 годин)
+# ======================================================
 def intermediate_geo_request(context: CallbackContext):
     user_id = context.job.context
     active_work = context.bot_data.get("active_work", {})
@@ -430,8 +484,7 @@ def schedule_intermediate_jobs(user_id: int, context: CallbackContext):
     for delay in delays:
         job = context.job_queue.run_once(intermediate_geo_request, delay, context=user_id)
         jobs.append(job)
-    if user_id not in context.dispatcher.user_data:
-        context.dispatcher.user_data[user_id] = {}
+    context.dispatcher.user_data.setdefault(user_id, {})
     context.dispatcher.user_data[user_id]["intermediate_jobs"] = jobs
 
 def cancel_intermediate_jobs(user_id: int, context: CallbackContext):
@@ -441,18 +494,30 @@ def cancel_intermediate_jobs(user_id: int, context: CallbackContext):
             job.schedule_removal()
         context.dispatcher.user_data[user_id]["intermediate_jobs"] = []
 
-# ------------------------------
-# Прийом локації поза ланцюгом (проміжні)
+# ======================================================
+# Прийом локації поза ланцюгами (default_location_handler)
+# ======================================================
 def default_location_handler(update: Update, context: CallbackContext) -> None:
+    """
+    Якщо користувач надсилає локацію поза активними станами.
+    Якщо finishing_mode=True, ігноруємо будь-які проміжні записи.
+    """
     user_id = update.effective_user.id
+
+    # Якщо зміна не активна => ігноруємо
     if not context.bot_data.get("active_work", {}).get(user_id, False):
         return
 
     user_data = context.dispatcher.user_data.get(user_id, {})
+    # Якщо користувач уже "завершує" зміну, не записуємо проміжні локації
+    if user_data.get("finishing_mode", False):
+        return
+
     if "sheet_header_row" not in user_data or "shift_start_dt" not in user_data:
         return
 
     shift_start_dt = user_data["shift_start_dt"]
+    # Ігноруємо, якщо менше 5 хв від початку
     if (now_belgium() - shift_start_dt).total_seconds() < 300:
         return
 
@@ -467,7 +532,7 @@ def default_location_handler(update: Update, context: CallbackContext) -> None:
         current_day = now_belgium().day
         target_row = header_row + current_day
 
-        col = 8 if intermediate_count == 0 else 9
+        col = 8 if intermediate_count == 0 else 9  # 3ч або 6ч
         geo_str = f"{loc.latitude}, {loc.longitude}"
         sheet.update_cell(target_row, col, geo_str)
         user_data["intermediate_count"] = intermediate_count + 1
@@ -476,25 +541,34 @@ def default_location_handler(update: Update, context: CallbackContext) -> None:
             f"Промежуточная геолокация {intermediate_count+1} записана.",
             reply_markup=ReplyKeyboardRemove()
         )
+        # Показуємо меню знову (в залежності від часу)
         send_main_menu(user_id, context)
 
+# ======================================================
+# Додаткові хендлери
+# ======================================================
 def menu_command(update: Update, context: CallbackContext) -> None:
     send_main_menu(update.message.chat_id, context)
 
 def inactive_shift_button_handler(update: Update, context: CallbackContext) -> None:
     update.message.reply_text("Смена еще не длится 1 час. Для завершения смены подождите, пожалуйста.")
 
+# ======================================================
+# Запуск бота
+# ======================================================
 def main() -> None:
-    # На всяк випадок знімемо Webhook (щоб не було конфлікту з getUpdates)
+    # Видаляємо будь-який Webhook, щоб уникнути конфлікту
     bot = Bot(token=BOT_TOKEN)
     bot.delete_webhook()
 
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    # Ініціалізація
     dp.bot_data["registered_users"] = load_registered_users()
     dp.bot_data["active_work"] = {}
 
+    # ---- Реєстрація
     reg_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
         states={
@@ -505,6 +579,7 @@ def main() -> None:
     )
     dp.add_handler(reg_handler)
 
+    # ---- Початок зміни
     work_start_handler = ConversationHandler(
         entry_points=[MessageHandler(Filters.regex("^Приступаю$"), start_work_entry)],
         states={
@@ -518,6 +593,7 @@ def main() -> None:
     )
     dp.add_handler(work_start_handler)
 
+    # ---- Завершення зміни
     work_end_handler = ConversationHandler(
         entry_points=[MessageHandler(Filters.regex("^Завершаю$"), finish_work_entry)],
         states={
@@ -529,12 +605,16 @@ def main() -> None:
     )
     dp.add_handler(work_end_handler)
 
+    # Default location handler (проміжні локації)
     dp.add_handler(MessageHandler(Filters.location, default_location_handler), group=1)
+
+    # Команда /menu
     dp.add_handler(CommandHandler('menu', menu_command))
 
+    # "Идёт смена"
     dp.add_handler(MessageHandler(Filters.regex("^Идёт смена$"), inactive_shift_button_handler))
 
-    # Запуск long-polling з drop_pending_updates=True
+    # Запуск long-polling
     updater.start_polling(drop_pending_updates=True)
     updater.idle()
 
