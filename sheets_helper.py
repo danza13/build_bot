@@ -12,7 +12,7 @@ from gspread_formatting import (
     format_cell_range,
 )
 
-# Словник назв місяців російською
+# Russian month names
 MONTH_NAMES = {
     1: "Январь",
     2: "Февраль",
@@ -47,14 +47,13 @@ def get_gspread_client():
 
 def get_month_sheet():
     """
-    Відкриваємо Google Spreadsheet за ID.
-    Якщо листа з поточним місяцем (російською) немає – створюємо.
+    Opens the Google Spreadsheet by ID.
+    If a worksheet for the current month (in Russian) doesn't exist, create it.
     """
     client = get_gspread_client()
-    # Замість "BUILD" – використовуйте свій spreadsheetId
+    # Replace "1FojL9Buaw2MxE1V9zFpeXYwM75ym1MLHeIq44OFn_H4" with your actual spreadsheetId if needed
     spreadsheet = client.open_by_key("1FojL9Buaw2MxE1V9zFpeXYwM75ym1MLHeIq44OFn_H4")
 
-    # Використовуємо локальний час для Бельгії
     now = datetime.datetime.now(ZoneInfo("Europe/Brussels"))
     month_name = MONTH_NAMES.get(now.month, "Unknown")
 
@@ -69,7 +68,7 @@ def get_today_sheet(context=None):
     return get_month_sheet()
 
 def get_days_in_month():
-    """Повертає кількість днів у поточному місяці, з урахуванням часу Бельгії."""
+    """Return the number of days in the current month (Belgium local time)."""
     now = datetime.datetime.now(ZoneInfo("Europe/Brussels"))
     return calendar.monthrange(now.year, now.month)[1]
 
@@ -78,8 +77,8 @@ def merge_cells(sheet, range_str):
 
 def get_worker_block_header_row(sheet, phone):
     """
-    Шукає комірку з номером телефону (без +) у листі.
-    Повертає (row - 1), де row – рядок з телефоном, або None, якщо не знайдено.
+    Find the cell containing the phone number (without +) in the sheet.
+    Return (row - 1) where row is the phone cell row, or None if not found.
     """
     normalized_phone = phone.lstrip("+")
     try:
@@ -93,56 +92,56 @@ def get_worker_block_header_row(sheet, phone):
 
 def create_worker_block(sheet, worker, start_row):
     """
-    Створює блок рядків у таблиці для працівника:
-      - Заголовок (B:M)
-      - Злиті клітинки під ФИО (B) і Телефон (C)
-      - Дати в стовпчику M
-      - Форматування та рамки
-    Повертає (next_free_row, header_row).
+    Create a block of rows in the sheet for the worker:
+      - Header (columns B..J)
+      - Merged cells for ФИО (B) and Номер телефона (C)
+      - Dates in column J
+      - Formatting and borders
+    Returns (next_free_row, header_row).
     """
     days = get_days_in_month()
     header_row = start_row
     data_start = header_row + 1
     data_end = header_row + days
 
-    # Заголовок
+    # Header row in Russian
     headers = [[
-        "ФИО", "Номер телефона", "АВТО", "Начальный пробег",
+        "ФИО", "Номер телефона",
         "Время начала", "Координаты начала",
         "Промеж 3 часа", "Промеж 6 часов",
         "Время окончания", "Координаты конец",
-        "Конечный пробег", "Дата"
+        "Дата"
     ]]
     sheet.batch_update([{
-        'range': f"B{header_row}:M{header_row}",
+        'range': f"B{header_row}:J{header_row}",
         'values': headers
     }])
 
-    # Запис дат у стовпець M (для всього місяця)
+    # Fill dates in column J
     now = datetime.datetime.now(ZoneInfo("Europe/Brussels"))
     date_updates = []
     for i in range(1, days + 1):
         day_str = f"{i:02d}.{now.month:02d}"
-        cell = f"M{data_start + i - 1}"
+        cell = f"J{data_start + i - 1}"
         date_updates.append({'range': cell, 'values': [[day_str]]})
 
     if date_updates:
         sheet.batch_update(date_updates)
 
-    # Злиття клітинок для ФИО (B) і Телефона (C)
+    # Merge ФИО (B) and Номер телефона (C) down the month
     merge_cells(sheet, f"B{data_start}:B{data_end}")
     merge_cells(sheet, f"C{data_start}:C{data_end}")
     sheet.update_acell(f"B{data_start}", worker["fio"])
     sheet.update_acell(f"C{data_start}", worker["phone"].lstrip("+"))
 
-    # Форматування
+    # Formatting
     general_format = CellFormat(
         backgroundColor=Color(0.97, 0.97, 0.97),
         horizontalAlignment="CENTER",
         verticalAlignment="MIDDLE",
         textFormat=TextFormat(bold=True, fontSize=13)
     )
-    block_range = f"B{header_row}:M{data_end}"
+    block_range = f"B{header_row}:J{data_end}"
     format_cell_range(sheet, block_range, general_format)
 
     header_format = CellFormat(
@@ -151,7 +150,7 @@ def create_worker_block(sheet, worker, start_row):
         verticalAlignment="MIDDLE",
         textFormat=TextFormat(bold=True, fontSize=15)
     )
-    header_range = f"B{header_row}:M{header_row}"
+    header_range = f"B{header_row}:J{header_row}"
     format_cell_range(sheet, header_range, header_format)
 
     phone_format = CellFormat(
@@ -163,15 +162,15 @@ def create_worker_block(sheet, worker, start_row):
     phone_range = f"C{data_start}:C{data_end}"
     format_cell_range(sheet, phone_range, phone_format)
 
-    # Рамки
+    # Borders
     border_request = {
       "updateBorders": {
         "range": {
           "sheetId": sheet.id,
-          "startRowIndex": header_row - 1,  # -1, бо нумерація з 0
+          "startRowIndex": header_row - 1,  # zero-based indexing
           "endRowIndex": data_end,
-          "startColumnIndex": 1,
-          "endColumnIndex": 13
+          "startColumnIndex": 1,           # B = 1
+          "endColumnIndex": 10             # J = 9, but endColumnIndex is exclusive
         },
         "top": {
           "style": "SOLID_THICK",
@@ -207,7 +206,7 @@ def create_worker_block(sheet, worker, start_row):
     }
     sheet.spreadsheet.batch_update({"requests": [border_request]})
 
-    # Проміжний рядок (висота 30)
+    # Add an extra gap row below this block
     gap_request = {
         "updateDimensionProperties": {
             "range": {
@@ -224,7 +223,7 @@ def create_worker_block(sheet, worker, start_row):
     }
     sheet.spreadsheet.batch_update({"requests": [gap_request]})
 
-    # Ширини стовпців
+    # Set column widths
     column_width_requests = [
         {
             "updateDimensionProperties": {
@@ -259,8 +258,8 @@ def create_worker_block(sheet, worker, start_row):
                 "range": {
                     "sheetId": sheet.id,
                     "dimension": "COLUMNS",
-                    "startIndex": 3,  # D-L
-                    "endIndex": 12
+                    "startIndex": 3,  # D..I
+                    "endIndex": 9
                 },
                 "properties": {
                     "pixelSize": 200
@@ -273,8 +272,8 @@ def create_worker_block(sheet, worker, start_row):
                 "range": {
                     "sheetId": sheet.id,
                     "dimension": "COLUMNS",
-                    "startIndex": 12, # M
-                    "endIndex": 13
+                    "startIndex": 9,  # J
+                    "endIndex": 10
                 },
                 "properties": {
                     "pixelSize": 70
@@ -288,32 +287,27 @@ def create_worker_block(sheet, worker, start_row):
     next_free_row = data_end + 2
     return next_free_row, header_row
 
-# -------------------------------------------
-#  ДОДАЙТЕ (ПОВЕРНІТЬ) ФУНКЦІЮ update_shift_row
-# -------------------------------------------
+
 def update_shift_row(sheet, header_row, shift_info):
     """
-    Оновлює дані початку (або відсутності) зміни для поточного дня.
-    Параметри:
-      sheet       - об'єкт Worksheet
-      header_row  - рядок заголовка блоку співробітника
-      shift_info  - словник:
-          car, start_mileage, start_time, start_coords
-          (або 'no_shift': True)
+    Update start-of-shift data (or mark no shift) for the current day.
+    shift_info can have:
+      - start_time
+      - start_coords
+      OR
+      - no_shift=True (to fill row with '-')
     """
-    # Для визначення дня беремо локальний час (Бельгія).
     now = datetime.datetime.now(ZoneInfo("Europe/Brussels"))
     current_day = now.day
     target_row = header_row + current_day
 
+    # If we want to mark no shift
     if shift_info.get("no_shift", False):
-        # Якщо no_shift, ставимо "-" у стовпцях D..M
-        for col in range(4, 13):
+        # Fill columns D..I with "-"
+        for col in range(4, 10):
             sheet.update_cell(target_row, col, "-")
         return
 
-    # Інакше заповнюємо потрібні дані
-    sheet.update_cell(target_row, 4, shift_info.get("car", "-"))
-    sheet.update_cell(target_row, 5, shift_info.get("start_mileage", "-"))
-    sheet.update_cell(target_row, 6, shift_info.get("start_time", "-"))
-    sheet.update_cell(target_row, 7, shift_info.get("start_coords", "-"))
+    # Otherwise, fill start time (D=4) and start coords (E=5)
+    sheet.update_cell(target_row, 4, shift_info.get("start_time", "-"))
+    sheet.update_cell(target_row, 5, shift_info.get("start_coords", "-"))
